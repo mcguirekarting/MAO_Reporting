@@ -1,0 +1,149 @@
+version: '3'
+
+x-airflow-common:
+  &airflow-common
+  image: apache/airflow:2.7.2-python3.9
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
+    AIRFLOW__CORE__FERNET_KEY: ''
+    # Email configuration
+    AIRFLOW__SMTP__SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+    AIRFLOW__SMTP__SMTP_PORT: ${SMTP_PORT:-587}
+    AIRFLOW__SMTP__SMTP_USER: ${SMTP_USER:-your-email@gmail.com}
+    AIRFLOW__SMTP__SMTP_PASSWORD: ${SMTP_PASSWORD:-your-password}
+    AIRFLOW__SMTP__SMTP_MAIL_FROM: ${SMTP_MAIL_FROM:-your-email@gmail.com}
+    AIRFLOW__SMTP__SMTP_STARTTLS: 'True'
+    AIRFLOW__SMTP__SMTP_SSL: 'False'
+    # API connection
+    ORDER_API_BASE_URL: ${ORDER_API_BASE_URL:-https://api.example.com}
+    ORDER_API_CLIENT_ID: ${ORDER_API_CLIENT_ID:-default_client_id}
+    ORDER_API_CLIENT_SECRET: ${ORDER_API_CLIENT_SECRET:-default_client_secret}
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./config:/opt/airflow/config
+    - ./plugins:/opt/airflow/plugins
+    - ./utils:/opt/airflow/utils
+    - ./tmp:/tmp
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    &airflow-common-depends-on
+    postgres:
+      condition: service_healthy
+  
+services:
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 5
+    restart: always
+    ports:
+      - "5432:5432"  # Fixed: Changed from 8080:8080 to correct Postgres port
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command: >
+      -c "
+        echo 'Installing required packages...'
+        pip install --no-cache-dir pandas matplotlib reportlab requests psycopg2-binary
+        
+        echo 'Removing problematic packages...'
+        pip uninstall -y apache-airflow-providers-openlineage
+        
+        echo 'Creating necessary directories...'
+        mkdir -p /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins /opt/airflow/config /opt/airflow/utils /tmp
+        
+        echo 'Initializing Airflow database...'
+        airflow db init
+        
+        echo 'Upgrading Airflow database...'
+        airflow db upgrade
+        
+        echo 'Creating admin user...'
+        airflow users create \
+          --username admin \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com \
+          --password admin
+          
+        echo 'Initialization complete'
+        exit 0
+      "
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_UPGRADE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: >
+      bash -c "
+        echo 'Installing required packages for webserver...'
+        pip install --no-cache-dir pandas matplotlib reportlab requests psycopg2-binary
+        
+        echo 'Removing problematic packages for webserver...'
+        pip uninstall -y apache-airflow-providers-openlineage
+        
+        echo 'Starting Airflow webserver...'
+        exec airflow webserver
+      "
+    ports:
+      - "8081:8080"  # Fixed: Changed from 8080:8080 to avoid port conflict
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: >
+      bash -c "
+        echo 'Installing required packages for scheduler...'
+        pip install --no-cache-dir pandas matplotlib reportlab requests psycopg2-binary
+        
+        echo 'Removing problematic packages for scheduler...'
+        pip uninstall -y apache-airflow-providers-openlineage
+        
+        echo 'Starting Airflow scheduler...'
+        exec airflow scheduler
+      "
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-db-volume:
