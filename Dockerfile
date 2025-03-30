@@ -1,5 +1,5 @@
 # Dockerfile for custom Airflow image with additional dependencies
-FROM apache/airflow:2.10.5
+FROM apache/airflow:2.7.2
 
 USER root
 
@@ -20,6 +20,7 @@ RUN apt-get update \
         libfreetype6-dev \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
 
 USER airflow
 
